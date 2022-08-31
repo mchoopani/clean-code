@@ -1,10 +1,11 @@
 @login_required
 @transaction.commit_on_success
 def create_w(request, id):
-    if Register.objects.filter(id=id).exists() and Register.objects.get(id=id).sender == request.sender:
+    if Register.objects.filter(id=id).exists()\
+            and \
+            Register.objects.get(id=id).sender == request.sender:
         return create_response([id], user_friendly=True)
-    else:
-        return HttpResponseRedirect("/")
+    return HttpResponseRedirect("/")
 
 
 def map_reduce_task(request, ids):
@@ -12,27 +13,6 @@ def map_reduce_task(request, ids):
     ids = get_ids(ids)
     if not registers:
         return HttpResponseRedirect("/")
-    else:
-        for register in registers:
-            if ids:  # Using optimized queries:
-                objects = register.objects.filter(id__in=ids).values_list("id", flat=True)
-            else:
-                objects = register.objects.all().values_list("id", flat=True)
-
-            t = 0
-            task_map = []
-
-            def chunks(objects, length):  # Defining method with a generator in a loop.
-                for i in xrange(0, len(objects), length):
-                    yield objects[i:i+length]
-
-            for chunk in chunks(objects, 20):
-                countdown = 5*t
-                t += 1
-                tasks_map.append(request_by_mapper(register, chunk, countdown, datetime.now()))
-        g = group(*tasks_map)
-        reduce_task = chain(g, create_request_by_reduce_async.s(tasks_map))()
-
 
 @login_required
 def create_payment(request):
@@ -270,40 +250,7 @@ def backup_to_csv(request):
     data['case'] = InsuranceCase
     data['additional'] = AdditionalData
     cursor = connection.cursor()
-    cursor.execute('''SELECT insurance_policy.id AS Policy_number,
-                        insurance_policy.request_date AS Policy_date,
-                        user_profile.first_name AS First_name,
-                        user_profile.last_name AS Last_name,
-                        user_profile.email AS Email,
-                        insurance_policy.start_date AS Start_date,
-                        insurance_policy.expiration_date AS Expiration_date,
-                        insurance_policy.expiration_date - \
-                        insurance_policy.start_date AS Number_of_days,
-                        crypto_exchange.name AS Crypto_exchange_name,
-                        crypto_exchange.coverage_limit AS Limit_BTC,
-                        insurance_policy.cover AS Insured_Limit,
-                        insurance_policy.fee AS Premium_paid,
-                        user_payments.amount AS User_paid,
-                        user_payments.currency AS User_currency,
-                        crypto_exchange.rate AS Premium_rate,
-                        user_payments.update_date AS Premium_payment_date,
-                        insurance_case.loss_value AS Outstanding_claim_BTC,
-                        insurance_case.incident_date AS Date_of_claim,
-                        insurance_case.refund_paid AS Paid_claim_BTC,
-                        insurance_case.request_date AS Date_of_claim_payment,
-                        insurance_policy.status AS Insurance_policy_status,
-                        user_payments.status AS User_payments_status,
-                        insurance_case.status AS Insurance_case_status
-                        FROM insurance_policy
-                        LEFT JOIN user_profile ON user_profile.id = \
-                        insurance_policy.user
-                        LEFT JOIN crypto_exchange ON crypto_exchange.id = \
-                        insurance_policy.exchange
-                        LEFT JOIN user_payments ON user_payments.id = \
-                        insurance_policy.payment_id
-                        LEFT JOIN insurance_case ON \
-                        insurance_case.insurance = insurance_policy.id
-                        ''')
+    cursor.execute('''''')
     insurance_report = cursor.fetchall()
 
     if request.method == 'GET':
@@ -317,7 +264,7 @@ def backup_to_csv(request):
         datasets['additional'] = not bool(request.GET.get('additional'))
         response = HttpResponse(content_type='application/zip')
         response['Content-Disposition'] = 'attachment; filename=backup.csv.zip'
-        z = zipfile.ZipFile(response, 'w')
+        zip_file = zipfile.ZipFile(response, 'w')
         for key in datasets:
             if datasets[key] is True:
                 output = StringIO()
@@ -330,7 +277,7 @@ def backup_to_csv(request):
                         writer.writerow([row[k] for k in sorted(keys)])
                 else:
                     writer.writerow(['NULL TABLE'])
-                z.writestr("%s.csv" % key, output.getvalue())
+                zip_file.writestr("%s.csv" % key, output.getvalue())
 
         out = StringIO()
         writer = csv.writer(out)
@@ -348,9 +295,9 @@ def backup_to_csv(request):
         writer.writerow(header)
         for row in insurance_report:
             writer.writerow(row)
-        z.writestr("insurance_report.csv", out.getvalue())
+        zip_file.writestr("insurance_report.csv", out.getvalue())
         try:
-            if not z.testzip():
+            if not zip_file.testzip():
                 responseData = {'error': True, 'message': 'Nothing to backup'}
                 return JsonResponse(responseData)
         except Exception:
