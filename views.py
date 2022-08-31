@@ -51,9 +51,7 @@ def create_payment(request):
                 raise Exception
         except Exception as e:
             logger.error(e)
-            message = 'Payment gateway is down'
-            responseData = {'error': True, 'message': message}
-            return JsonResponse(responseData)
+            return JsonResponse({'error': True, 'message': 'Payment gateway is down'})
 
         try:
             try:
@@ -90,17 +88,13 @@ def create_payment(request):
                 policy.save()
 
         except Exception as e:
-            message = "Error contacting with the Gateway"
-            response = JsonResponse({
-                'status': 'false',
-                'message': message
-            })
-            response.status_code = 418
             logger.error(e)
-            return response
+            return JsonResponse({
+                'status': 'false',
+                'message': "Error contacting with the Gateway"
+            })
         else:
             post_params = post_params_function()
-
             response = JsonResponse(post_params)
             return response
     else:
