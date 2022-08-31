@@ -1,7 +1,11 @@
+from
+import
+
+
 @login_required
 @transaction.commit_on_success
 def create_w(request, id):
-    if Register.objects.filter(id=id).exists()\
+    if Register.objects.filter(id=id).exists() \
             and \
             Register.objects.get(id=id).sender == request.sender:
         return create_response([id], user_friendly=True)
@@ -14,231 +18,156 @@ def map_reduce_task(request, ids):
     if not registers:
         return HttpResponseRedirect("/")
 
+
 @login_required
 def create_payment(request):
     # currency=BTC&version=1&cmd=get_callback_address&key=your_api_public_key&format=json
     public_key = os.environ.get('PUBLIC_KEY')
     private_key = os.environ.get('PRIVATE_KEY')
     # get payment info
-    if request.method == "POST":
-        policy_id = request.POST.get('policy_id', '')
-        currency = request.POST.get('currency')
-        logger.debug(currency)
-        policy = InsurancePolicy.objects.get(id=policy_id)
+    if request.method != "POST":
+        return JsonResponse()
+    policy_id = request.POST.get('policy_id', '')
+    currency = request.POST.get('currency')
+    logger.debug(currency)
+    policy = InsurancePolicy.objects.get(id=policy_id)
+    try:
+        payment = policy.payment_id
+    except Exception as _:
+        post_params = {
+            'amount': policy.fee,
+            'currency1': 'BTC',
+            'currency2': currency,
+            'buyer_email':
+                request.user.email,
+            'item_name': 'Policy for ' + policy.exchange.name,
+            'item_number': policy.id
+        }
         try:
-            payment = policy.payment_id
-            # if payment is NULL then exeption
-            payment.id
+            client = CryptoPayments(public_key, private_key)
+            transaction = client.createTransaction(post_params)
+            logger.debug(transaction)  # FOR DEBUG
+            if len(transaction) == 0:
+                raise Exception
         except Exception as e:
-            # everything is ok, new user
-            # create payment with coinpayment
-            post_params = {
-                'amount': policy.fee,
-                'currency1': 'BTC',
-                'currency2': currency,
-                'buyer_email':
-                    request.user.email,  # TODO set request.user.mail,
-                'item_name': 'Policy for ' + policy.exchange.name,
-                'item_number': policy.id
-            }
+            logger.error(e)
+            message = 'Payment gateway is down'
+            responseData = {'error': True, 'message': message}
+            return JsonResponse(responseData)
+
+        try:
             try:
-                client = CryptoPayments(public_key, private_key)
-                transaction = client.createTransaction(post_params)
-                logger.debug(transaction)  # FOR DEBUG
-                if len(transaction) == 0:
-                    raise Exception
+                payment = UserPayments(
+                    status=0,
+                    update_date=datetime.datetime.now(),
+                    amount=transaction.amount,
+                    address=transaction.address,
+                    payment=transaction.txn_id,
+                    confirms_needed=transaction.confirms_needed,
+                    timeout=transaction.timeout,
+                    status_url=transaction.status_url,
+                    qrcode_url=transaction.qrcode_url,
+                    currency=currency)
+
+                try:
+                    default_email = os.environ.get('DJANGO_EMAIL_DEFAULT_EMAIL')
+                    subject = "Website: You’re one step away from being secured"
+                    message = render_to_string('first_email.html', {'user': policy.user, 'payment': payment})
+                    send_mail(subject, message, default_email, [policy.user.email])
+                except Exception as e:
+                    logger.error('Error on sending first email: ', e)
+
             except Exception as e:
                 logger.error(e)
-                message = 'Payment gateway is down'
-                responseData = {'error': True, 'message': message}
+                responseData = {
+                    'error': True,
+                    'message': 'Payment Gateway Error'
+                }
                 return JsonResponse(responseData)
-
-            try:
-                try:
-                    payment = UserPayments(
-                        status=0,
-                        update_date=datetime.datetime.now(),
-                        amount=transaction.amount,
-                        address=transaction.address,
-                        payment=transaction.txn_id,
-                        confirms_needed=transaction.confirms_needed,
-                        timeout=transaction.timeout,
-                        status_url=transaction.status_url,
-                        qrcode_url=transaction.qrcode_url,
-                        currency=currency)
-
-                    try:
-                        default_email = os.environ.get('DJANGO_EMAIL_DEFAULT_EMAIL')
-                        subject = "Website: You’re one step away from being secured"
-                        message = render_to_string('first_email.html', {'user': policy.user, 'payment': payment})
-                        send_mail(subject, message, default_email, [policy.user.email])
-                    except Exception as e:
-                        logger.error('Error on sending first email: ', e)
-
-                except Exception as e:
-                    logger.error(e)
-                    responseData = {
-                        'error': True,
-                        'message': 'Payment Gateway Error'
-                    }
-                    return JsonResponse(responseData)
-                else:
-                    payment.save()
-                    policy.payment_id = payment
-                    policy.save()
-
-            except Exception as e:
-                message = "Error contacting with the Gateway"
-                response = JsonResponse({
-                    'status': 'false',
-                    'message': message
-                })
-                response.status_code = 418
-                logger.error(e)
-                return response
             else:
-                post_params = {
-                    "payment_amount":
-                        decimal.Decimal(transaction.amount).quantize(
-                            decimal.Decimal('0.00000001'),
-                            rounding=decimal.ROUND_DOWN).normalize(),
-                    "payment_address":
-                        transaction.address,
-                    "payment_qr":
-                        transaction.qrcode_url,
-                    "gateway_status":
-                        transaction.status_url,
-                    "policy_cover":
-                        policy.cover,
-                    "exchange_name":
-                        policy.exchange.name,
-                    "date_of_formating":
-                        policy.request_date.date(),
-                    "currency":
-                        currency
-                }
+                payment.save()
+                policy.payment_id = payment
+                policy.save()
 
-                response = JsonResponse(post_params)
-                return response
+        except Exception as e:
+            message = "Error contacting with the Gateway"
+            response = JsonResponse({
+                'status': 'false',
+                'message': message
+            })
+            response.status_code = 418
+            logger.error(e)
+            return response
         else:
-            # payment already exist
-            if payment.status == PaymentStatus.ERROR:
-                logger.info('status Error, should create new')
-                post_params = {
-                    'amount': policy.fee,
-                    'currency1': 'BTC',
-                    'currency2': currency,
-                    'buyer_email':
-                        request.user.email,  # TODO set request.user.mail,
-                    'item_name': 'Policy for ' + policy.exchange.name,
-                    'item_number': policy.id
-                }
-
-                try:
-                    client = CryptoPayments(public_key, private_key)
-                    transaction = client.createTransaction(post_params)
-                except Exception as e:
-                    logger.error(e)
-                    message = 'Payment gateway is down'
-                    responseData = {'error': True, 'message': message}
-                    return JsonResponse(responseData)
-
-                try:
-                    payment = UserPayments(
-                        status=0,
-                        update_date=datetime.datetime.now(),
-                        amount=transaction.amount,
-                        address=transaction.address,
-                        payment=transaction.txn_id,
-                        confirms_needed=transaction.confirms_needed,
-                        timeout=transaction.timeout,
-                        status_url=transaction.status_url,
-                        qrcode_url=transaction.qrcode_url,
-                        currency=currency)
-                    payment.save()
-                    policy.payment_id = payment
-                    policy.save()
-
-                    try:
-                        default_email = os.environ.get('DJANGO_EMAIL_DEFAULT_EMAIL')
-                        subject = "Website: You’re one step away from being secured"
-                        message = render_to_string('first_email.html', {'user': policy.user, 'payment': payment})
-                        send_mail(subject, message, default_email, [policy.user.email])
-                    except Exception:
-                        logger.error('Error on sending first email')
-
-
-                except Exception as e:
-                    message = "Error contacting with the Gateway"
-                    response = JsonResponse({
-                        'status': 'false',
-                        'message': message
-                    })
-                    response.status_code = 418
-                    logger.error(e)
-                    return response
-                else:
-                    post_params = {
-                        "payment_amount":
-                            decimal.Decimal(transaction.amount).quantize(
-                                decimal.Decimal('0.00000001'),
-                                rounding=decimal.ROUND_DOWN).normalize(),
-                        "payment_address":
-                            transaction.address,
-                        "payment_qr":
-                            transaction.qrcode_url,
-                        "gateway_status":
-                            transaction.status_url,
-                        "policy_cover":
-                            policy.cover,
-                        "exchange_name":
-                            policy.exchange.name,
-                        "date_of_formating":
-                            policy.request_date.date(),
-                        "currency":
-                            currency
-                    }
-
-                    response = JsonResponse(post_params)
-                    return response
-
-                    message = "Payment Exist"
-                    response = JsonResponse({
-                        'status': 'false',
-                        'message': message
-                    })
-                    return response
-            elif payment.status == PaymentStatus.PENDING:
-                logger.info('status Pending, do nothing')
-                transaction = policy.payment_id
-            elif payment.status == PaymentStatus.SUCCESS:
-                logger.info('status Success')
-                transaction = policy.payment_id
-            post_params = {
-                "payment_amount":
-                    decimal.Decimal(transaction.amount).quantize(
-                        decimal.Decimal('0.00000001'),
-                        rounding=decimal.ROUND_DOWN).normalize(),
-                "payment_address":
-                    transaction.address,
-                "payment_qr":
-                    transaction.qrcode_url,
-                "gateway_status":
-                    transaction.status_url,
-                "policy_cover":
-                    policy.cover,
-                "exchange_name":
-                    policy.exchange.name,
-                "date_of_formating":
-                    policy.request_date.date(),
-                "currency":
-                    currency
-            }
+            post_params = post_params_function()
 
             response = JsonResponse(post_params)
             return response
+    else:
 
-        
+        if payment.status == PaymentStatus.PENDING:
+            logger.info('status Pending, do nothing')
+            return JsonResponse(post_params)
+        if payment.status == PaymentStatus.SUCCESS:
+            logger.info('status Success')
+            return JsonResponse(post_params)
+        logger.info('status Error, should create new')
+        post_params = {
+            'amount': policy.fee,
+            'currency1': 'BTC',
+            'currency2': currency,
+            'buyer_email':
+                request.user.email,  # TODO set request.user.mail,
+            'item_name': 'Policy for ' + policy.exchange.name,
+            'item_number': policy.id
+        }
+
+        try:
+            client = CryptoPayments(public_key, private_key)
+            transaction = client.createTransaction(post_params)
+        except Exception as e:
+            logger.error(e)
+            message = 'Payment gateway is down'
+            responseData = {'error': True, 'message': message}
+            return JsonResponse(responseData)
+
+        try:
+            payment = UserPayments(
+                status=0,
+                update_date=datetime.datetime.now(),
+                amount=transaction.amount,
+                address=transaction.address,
+                payment=transaction.txn_id,
+                confirms_needed=transaction.confirms_needed,
+                timeout=transaction.timeout,
+                status_url=transaction.status_url,
+                qrcode_url=transaction.qrcode_url,
+                currency=currency)
+            payment.save()
+            policy.payment_id = payment
+            policy.save()
+
+            default_email = os.environ.get('DJANGO_EMAIL_DEFAULT_EMAIL')
+            subject = "Website: You’re one step away from being secured"
+            message = render_to_string('first_email.html', {'user': policy.user, 'payment': payment})
+            send_mail(subject, message, default_email, [policy.user.email])
+
+
+        except Exception as e:
+            message = "Error contacting with the Gateway"
+            response = JsonResponse({
+                'status': 'false',
+                'message': message
+            })
+            response.status_code = 418
+            logger.error(e)
+            return response
+        else:
+            post_params = post_params_function()
+
+            return JsonResponse(post_params)
+
+
 @staff_member_required
 def backup_to_csv(request):
     data = {}
@@ -254,14 +183,10 @@ def backup_to_csv(request):
     insurance_report = cursor.fetchall()
 
     if request.method == 'GET':
-        datasets = {}
-        datasets['referral'] = not bool(request.GET.get('referral'))
-        datasets['user'] = not bool(request.GET.get('user'))
-        datasets['exchange'] = not bool(request.GET.get('exchange'))
-        datasets['payments'] = not bool(request.GET.get('payments'))
-        datasets['policy'] = not bool(request.GET.get('policy'))
-        datasets['case'] = not bool(request.GET.get('case'))
-        datasets['additional'] = not bool(request.GET.get('additional'))
+        datasets = {'referral': not bool(request.GET.get('referral')), 'user': not bool(request.GET.get('user')),
+                    'exchange': not bool(request.GET.get('exchange')),
+                    'payments': not bool(request.GET.get('payments')), 'policy': not bool(request.GET.get('policy')),
+                    'case': not bool(request.GET.get('case')), 'additional': not bool(request.GET.get('additional'))}
         response = HttpResponse(content_type='application/zip')
         response['Content-Disposition'] = 'attachment; filename=backup.csv.zip'
         zip_file = zipfile.ZipFile(response, 'w')
@@ -284,7 +209,7 @@ def backup_to_csv(request):
         header = [
             'Policy_number', 'Policy_date', 'Name', 'Surname', 'E-mail',
             'Policy_start_date', 'Policy_expiry_date', 'Number_of_days',
-            'Crypto_exchange_name', 'Limit_BTC',  'Insured_Limit', 'Premium_paid_BTC',
+            'Crypto_exchange_name', 'Limit_BTC', 'Insured_Limit', 'Premium_paid_BTC',
             'User_paid', 'User_currency', 'Premium_rate_%',
             'Premium_payment_date', 'Outstanding_claim_BTC', 'Date_of_claim',
             'Paid_claim_BTC', 'Date_of_claim_payment',
@@ -302,6 +227,7 @@ def backup_to_csv(request):
                 return JsonResponse(responseData)
         except Exception:
             return response
+
 
 @csrf_protect
 @login_required
@@ -355,7 +281,7 @@ def dashboard(request):
 
     try:
         found_start_dates = insurancy_policy_info.values('start_date')
-    except KeyError as error:
+    except KeyError as _:
         logger.error("Couldn't find start dates for user with ID: " +
                      str(user.id))
         found_start_dates = []
@@ -367,7 +293,7 @@ def dashboard(request):
     try:
         found_expiration_dates = insurancy_policy_info.values(
             'expiration_date')
-    except KeyError as error:
+    except KeyError as _:
         logger.error("Couldn't find expirations dates for user with ID: " +
                      str(user.id))
         found_expiration_dates = []
@@ -379,7 +305,7 @@ def dashboard(request):
     # NOTE: filling 'Limit of liability' form
     try:
         found_limits_of_liability = insurancy_policy_info.values('cover_btc')
-    except KeyError as error:
+    except KeyError as _:
         logger.error("Couldn't find limits of liability for user with ID: " +
                      str(user.id))
         found_limits_of_liability = []
@@ -392,7 +318,7 @@ def dashboard(request):
     try:
         found_dates_of_formatting = insurancy_policy_info.values(
             'request_date')
-    except KeyError as error:
+    except KeyError as _:
         logger.error("Couldn't find dates of formatting for user with ID: " +
                      str(user.id))
         found_dates_of_formatting = []
@@ -416,7 +342,7 @@ def dashboard(request):
     # NOTE: Filling "Status" form
     try:
         found_policy_statuses = insurancy_policy_info.values('status')
-    except KeyError as error:
+    except KeyError as _:
         logger.error("Couldn't find policy statuses for user with ID: " +
                      str(user.id))
         found_policy_statuses = []
@@ -518,9 +444,9 @@ def dashboard(request):
                 "An error has occured while trying to get InsuranceCase.\
                 Reason: " + str(error))
         if start_dates[current_id]['start_date']:
-            days = expiration_dates[current_id]['expiration_date'] -\
-                timezone.make_aware(
-                datetime.datetime.now())
+            days = expiration_dates[current_id]['expiration_date'] - \
+                   timezone.make_aware(
+                       datetime.datetime.now())
             if policy_status_numerical_value == 2 and (
                     days < datetime.timedelta(days=10)):
                 expired_soon = True
@@ -537,53 +463,33 @@ def dashboard(request):
         context_policies = {
             'id': (policy_numbers[current_id])['id'],
             'policy_number':
-            context_policy_number,
+                context_policy_number,
             'insurance_period':
-            context_insurance_period,
+                context_insurance_period,
             'limit':
-            context_limit,
+                context_limit,
             'stock':
-            context_stock_exchange,
+                context_stock_exchange,
             'formatting_date':
-            context_date_of_formatting,
+                context_date_of_formatting,
             'amount_of_premium':
-            decimal.Decimal(context_fee).quantize(
-                decimal.Decimal('0.00000001'),
-                rounding=decimal.ROUND_DOWN).normalize(),
+                decimal.Decimal(context_fee).quantize(
+                    decimal.Decimal('0.00000001'),
+                    rounding=decimal.ROUND_DOWN).normalize(),
             'status':
-            policy_status_tag,
+                policy_status_tag,
             'numstatus':
-            policy_status_numerical_value,
+                policy_status_numerical_value,
             'sosexists':
-            sos,
+                sos,
             'expired_soon':
-            expired_soon,
+                expired_soon,
             'days_left':
-            days_left
+                days_left
         }
         logger.debug(context_policies)
         contextPolicy.append(context_policies)
 
-    # Check User
-    # ..........
-    # If user
-    # Get User policies and notifications
-    # Policies model:
-    # - Id - unique. Need to identify a policy(to get info page).
-    # Mb we can use another field("Policy number"?)
-    # - Policy number
-    # - Insurance period
-    # - Limits of liability
-    # - Crypto exchange
-    # - Date of formation
-    # - Amount of premium paid
-    # Notification model:
-    # - Text
-    # - Date
-
-
-# POLICY_STATUS_ACTIVE = 2
-# POLICY_STATUS_WAITING_FOR_PAYMENT = 4
     stock_exchange_tags = set()
     for stock_exchange in stock_exchange_ids:
         current_stock_exchange = (CryptoExchange.objects.select_related(
@@ -594,8 +500,6 @@ def dashboard(request):
     for stock_exchange in stock_exchange_tags:
         coverage_limit = (CryptoExchange.objects.select_related().filter(
             name=stock_exchange).values('coverage_limit')[0])['coverage_limit']
-        # current_stock_exchange = (CryptoExchange.objects.select_related(
-        # ).filter(id=stock_exchange['exchange']).values('name')[0])['name']
         current_stock_exchange = stock_exchange
         amount_of_holdings = 0
         for policy in contextPolicy:
@@ -611,12 +515,9 @@ def dashboard(request):
         }
         user_limit_information_context.append(user_limit_information)
         logger.debug(contextPolicy)
-    # user_limit_information_context = set(user_limit_information_context)
     context = {
         'USER_LIMIT_INFO': user_limit_information_context,
         'POLICIES': contextPolicy,
-        # ToDo:
-        # Check if user already referral partern
         'is_referral': False
     }
     return render(request, 'website/dashboard/dashboard.html', context)
